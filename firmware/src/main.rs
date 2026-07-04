@@ -4,7 +4,7 @@
 extern crate alloc;
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
-use embassy_time::Delay;
+use embassy_time::{Delay, Timer};
 use embedded_graphics::{
     Drawable,
     draw_target::{DrawTarget, DrawTargetExt},
@@ -97,9 +97,27 @@ struct Buttons {
 }
 
 #[embassy_executor::task]
-async fn logic_task(loadcell: HX711<Output<'static>, Input<'static>, Delay>, buttons: Buttons) {
-    buttons.btn0.wait_for_low().await;
+async fn logic_task(
+    channel: Channel<NoopRawMutex, AppState, 3>,
+    loadcell: HX711<Output<'static>, Input<'static>, Delay>,
+    mut buttons: Buttons,
+) {
+    channel.send(AppState::Start).await;
+    Timer::after_secs(20).await;
+    channel.send(AppState::Rules).await;
+    Timer::after_secs(30).await;
+    channel
+        .send(AppState::Game {
+            soup_hp: 100,
+            player_hp: 100,
+            time_left_s: 60,
+            soup_status: SoupStatus::Neutral,
+        })
+        .await;
 }
+
+#[embassy_executor::task]
+async fn
 
 #[embassy_executor::task]
 async fn display_task(
@@ -111,6 +129,7 @@ async fn display_task(
 ) {
     let soup_sad = Qoi::new(include_bytes!("../images/sad.qoi")).unwrap();
     let soup_angry = Qoi::new(include_bytes!("../images/angry.qoi")).unwrap();
+    let soup_neutral = Qoi::new(include_bytes!("../images/neutral.qoi")).unwrap();
     let soup_sign = Qoi::new(include_bytes!("../images/sign.qoi")).unwrap();
 
     let mut buffer = [0u8; 512];
@@ -162,6 +181,7 @@ async fn display_task(
 enum SoupStatus {
     Angry,
     Sad,
+    Neutral,
 }
 
 enum AppState {

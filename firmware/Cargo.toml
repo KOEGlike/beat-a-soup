@@ -42,3 +42,4 @@ embedded-graphics = { version = "0.8.2" }
 tinyqoi = "0.2.0"
 
 loadcell = "0.3.0"
+ws2812-timer-delay = "0.3.0"
