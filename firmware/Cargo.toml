@@ -10,6 +10,9 @@ embassy-sync = { version = "0.8" }
 embassy-time = { version = "0.5" }
 embassy-net = { version = "0.9", features = ["dhcpv4", "dns", "tcp", "udp"] }
 
+# Embedded
+embedded-hal-bus = { version="0.2", features=["async"]}
+
 # ESP specifics
 esp-hal = { version = "1", features = ["esp32c3", "unstable", "rt", "exception-handler", "log-04"] }
 esp-backtrace = { version = "0.19", features = ["esp32c3", "panic-handler", "println"] }
@@ -25,16 +28,17 @@ static_cell = { version = "2" }
 heapless = { version = "0.9" }
 
 # Time
-time = { version = "0.3" }
-
-# HTTP
-reqwless = { workspace = true, features = ["alloc", "embedded-tls", "log"] }
+time = { version = "0.3", default-features = false }
 
 # Random
-rand_core = { workspace = true }
+rand_core = { version="0.10", default-features = false }
 
-# JSON
-microjson = { workspace = true}
+# log
+log = { version = "0.4" }
 
 # Display
-mipidsi = { version = "" }
+mipidsi = { version = "0.10" }
+embedded-graphics = { version = "0.8.2" }
+tinyqoi = "0.2.0"
+
+loadcell = "0.3.0"
