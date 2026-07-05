@@ -5,19 +5,25 @@ mod state_cell;
 
 extern crate alloc;
 use embassy_executor::Spawner;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Delay, Instant, Timer};
 use embedded_graphics::{
     Drawable,
     draw_target::{DrawTarget, DrawTargetExt},
     geometry::Point,
     image::Image,
-    pixelcolor::{Rgb565, RgbColor},
+    mono_font::{
+        MonoTextStyle,
+        ascii::{FONT_6X10, FONT_8X13},
+    },
+    pixelcolor::{Rgb565, Rgb888, RgbColor},
+    text::Text,
 };
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_alloc::heap_allocator;
 use esp_backtrace as _;
-use mipidsi::{Builder, interface::SpiInterface, models::ST7735s};
+use mipidsi::{Builder, interface::SpiInterface, models::ST7735s, options::Orientation};
+use state_cell::StateCell;
 
 use esp_hal::{
     Blocking,
@@ -38,8 +44,9 @@ use ws2812_timer_delay as ws2812;
 
 /// Size of heap for dynamically-allocated memory
 const HEAP_MEMORY_SIZE: usize = 72 * 1024;
+const TEXT_STYLE: MonoTextStyle<'_, Rgb565> = MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK);
 
-static CHANNEL: Channel<CriticalSectionRawMutex, AppState, 3> = Channel::new();
+static STATE: StateCell<CriticalSectionRawMutex, AppState, 1> = StateCell::new(AppState::Start);
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -78,9 +85,9 @@ async fn main(spawner: Spawner) {
     .with_sck(p.GPIO8)
     .with_mosi(p.GPIO10);
 
-    let channel = &CHANNEL;
+    let state = &STATE;
 
-    spawner.spawn(display_task(spi, cs, dc, rst, channel).expect("spawn display_task"));
+    spawner.spawn(display_task(spi, cs, dc, rst, state).expect("spawn display_task"));
 
     let mut loadcell = HX711::new(
         Output::new(p.GPIO2, Level::Low, OutputConfig::default()),
@@ -100,7 +107,7 @@ async fn main(spawner: Spawner) {
     //     btn3: Input::new(p.GPIO12, InputConfig::default()),
     // };
 
-    // spawner.spawn(logic_task(channel, loadcell, buttons).expect("spawn logic_task"));
+    // spawner.spawn(logic_task(state, loadcell, buttons).expect("spawn logic_task"));
 }
 
 struct Buttons {
@@ -112,19 +119,18 @@ struct Buttons {
 
 #[embassy_executor::task]
 async fn logic_task(
-    channel: &'static Channel<CriticalSectionRawMutex, AppState, 3>,
+    state: &'static StateCell<CriticalSectionRawMutex, AppState, 1>,
     loadcell: HX711<Output<'static>, Input<'static>, Delay>,
     mut buttons: Buttons,
 ) {
-    channel.send(AppState::Start).await;
+    state.set(AppState::Start).await;
     Timer::after_secs(20).await;
-    channel.send(AppState::Rules).await;
+    state.set(AppState::Rules).await;
     Timer::after_secs(30).await;
-    channel
-        .send(AppState::Game {
+    state
+        .set(AppState::Game {
             soup_hp: 100,
             player_hp: 100,
-            time_left_s: 60,
             soup_status: SoupStatus::Neutral,
         })
         .await;
@@ -139,13 +145,16 @@ async fn display_task(
     cs: Output<'static>,
     dc: Output<'static>,
     rst: Output<'static>,
-    channel: &'static Channel<CriticalSectionRawMutex, AppState, 3>,
+    state: &'static StateCell<CriticalSectionRawMutex, AppState, 1>,
 ) {
-    // let soup_sad = Qoi::new(include_bytes!("../images/sad.qoi")).unwrap();
-    // let soup_angry = Qoi::new(include_bytes!("../images/angry.qoi")).unwrap();
-    // let soup_neutral = Qoi::new(include_bytes!("../images/neutral.qoi")).unwrap();
-    // let soup_sign = Qoi::new(include_bytes!("../images/sign.qoi")).unwrap();
-    let dice = Qoi::new(include_bytes!("../images/dice.qoi")).unwrap();
+    let soup_sad = Qoi::new(include_bytes!("../images/sad.qoi")).unwrap();
+    let soup_angry = Qoi::new(include_bytes!("../images/angry.qoi")).unwrap();
+    let soup_neutral = Qoi::new(include_bytes!("../images/neutral.qoi")).unwrap();
+    let soup_sign = Qoi::new(include_bytes!("../images/sign.qoi")).unwrap();
+    let sky_seal = Qoi::new(include_bytes!("../images/sky_seal.qoi")).unwrap();
+    let sky = Qoi::new(include_bytes!("../images/sky.qoi")).unwrap();
+
+    let soup_offset = Point::new(5, 45);
 
     let mut buffer = [0u8; 512];
     // Wrap the SpiBus + CS pin into a SpiDevice (mipidsi requires SpiDevice).
@@ -157,7 +166,11 @@ async fn display_task(
         }
     };
     let di = SpiInterface::new(device, dc, &mut buffer);
-    let mut display = match Builder::new(ST7735s, di).reset_pin(rst).init(&mut Delay) {
+    let mut display = match Builder::new(ST7735s, di)
+        .reset_pin(rst)
+        .orientation(Orientation::new().rotate(mipidsi::options::Rotation::Deg270))
+        .init(&mut Delay)
+    {
         Ok(d) => d,
         Err(e) => {
             error!("display init failed: {e:?}");
@@ -165,49 +178,79 @@ async fn display_task(
         }
     };
 
-    channel.send(AppState::Start).await;
+    let mut receiver = state.subscriber().expect("state subscriber");
 
+    state.set(AppState::Rules).await;
     loop {
-        let state = channel.receive().await;
+        let app_state = receiver.changed().await;
 
-        match state {
+        let sky = Image::new(&sky, Point::new(-10, 0));
+        if let Err(e) = sky.draw(&mut display.color_converted()) {
+            error!("draw failed: {e:?}");
+            continue;
+        }
+
+        match app_state {
             AppState::Start => {
-                if let Err(e) = display.clear(Rgb565::RED) {
-                    error!("clear failed: {e:?}");
-                    continue;
-                }
-
-                let image = Image::new(&dice, Point::new(-64, -80));
+                let image = Image::new(&soup_sign, soup_offset);
                 if let Err(e) = image.draw(&mut display.color_converted()) {
                     error!("draw failed: {e:?}");
                     continue;
                 }
+
+                let welcome_text =
+                    Text::new("Welcome to\nSoup Game!", Point::new(70, 80), TEXT_STYLE);
+                if let Err(e) = welcome_text.draw(&mut display.color_converted()) {
+                    error!("draw failed: {e:?}");
+                    continue;
+                }
             }
-            AppState::Rules => todo!(),
+            AppState::Rules => {
+                let rules_text = Text::new(
+                    "Rules:\n-Press soup, be in\nthe green zone to\nattack soup\n-Press the buttons\nwhen to the LEDs\nlight up to protect\nyourself",
+                    Point::new(5, 35),
+                    TEXT_STYLE,
+                );
+                if let Err(e) = rules_text.draw(&mut display.color_converted()) {
+                    error!("draw failed: {e:?}");
+                    continue;
+                }
+            }
             AppState::Game {
                 soup_hp,
                 player_hp,
-                time_left_s,
                 soup_status,
-            } => todo!(),
+            } => {
+                let soup_image = match soup_status {
+                    SoupStatus::Angry => &soup_angry,
+                    SoupStatus::Sad => &soup_sad,
+                    SoupStatus::Neutral => &soup_neutral,
+                };
+                let soup_image = Image::new(soup_image, soup_offset);
+                if let Err(e) = soup_image.draw(&mut display.color_converted()) {
+                    error!("draw failed: {e:?}");
+                    continue;
+                }
+            }
             AppState::EndScreen { player_won } => todo!(),
         }
     }
 }
 
+#[derive(Clone)]
 enum SoupStatus {
     Angry,
     Sad,
     Neutral,
 }
 
+#[derive(Clone)]
 enum AppState {
     Start,
     Rules,
     Game {
         soup_hp: u32,
         player_hp: u32,
-        time_left_s: u32,
         soup_status: SoupStatus,
     },
     EndScreen {
