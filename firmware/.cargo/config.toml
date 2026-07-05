@@ -3,7 +3,7 @@ target = "riscv32imc-unknown-none-elf"
 rustflags = []
 
 [target.riscv32imc-unknown-none-elf]
-runner = "espflash flash --port COM3 --monitor --ignore-app-descriptor"
+runner = "espflash flash --port COM5 --monitor --ignore-app-descriptor"
 
 [alias]
 flash = "run --release"
