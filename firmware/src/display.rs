@@ -1,6 +1,7 @@
 use embassy_executor;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
+use core::fmt::Write;
 use embedded_graphics::{
     Drawable,
     draw_target::{DrawTarget, DrawTargetExt},
@@ -12,6 +13,7 @@ use embedded_graphics::{
     text::Text,
 };
 use embedded_hal_bus::spi::ExclusiveDevice;
+use heapless::String;
 use esp_hal::{
     Blocking,
     gpio::Output,
@@ -165,14 +167,25 @@ pub async fn display_task(
     let rng = Rng::new();
 
     state.set(AppState::Start).await;
+
+    let mut sky_seal_mode = rng.random() % 100 < 33;
+    let mut last_variant = 0u8;
+
     loop {
         let app_state = receiver.changed().await;
 
-        let sky_image = if rng.random() % 100 < 33 {
-            &sky_seal
-        } else {
-            &sky
+        let current_variant = match &app_state {
+            AppState::Start => 0,
+            AppState::Rules => 1,
+            AppState::Game { .. } => 2,
+            AppState::EndScreen { .. } => 3,
         };
+        if current_variant != last_variant {
+            last_variant = current_variant;
+            sky_seal_mode = rng.random() % 100 < 33;
+        }
+
+        let sky_image = if sky_seal_mode { &sky_seal } else { &sky };
         let sky = Image::new(sky_image, Point::new(-10, 0));
         if let Err(e) = sky.draw(&mut display.color_converted()) {
             error!("draw failed: {e:?}");
@@ -196,7 +209,7 @@ pub async fn display_task(
             }
             AppState::Rules => {
                 let rules_text = Text::new(
-                    "Rules:\n-Press soup, be in\nthe green zone to\nattack soup\n-Press the buttons\nwhen to the LEDs\nlight up to protect\nyourself",
+                    "Rules:\n-Press soup, be in\nthe green zone to\nattack soup\n-Press the buttons\nwhen the LEDs\nlight up to protect\nyourself",
                     Point::new(5, 35),
                     TEXT_STYLE,
                 );
@@ -281,6 +294,15 @@ pub async fn display_task(
                 if let Err(e) =
                     draw_force_meter(&mut dc, loadcell_reading, sweet_spot_min, sweet_spot_max)
                 {
+                    error!("draw failed: {e:?}");
+                    continue;
+                }
+
+                // DEBUG: live loadcell reading.
+                let mut dbg: String<16> = String::new();
+                write!(&mut dbg, "LC: {}", loadcell_reading).ok();
+                let dbg_text = Text::new(&dbg, Point::new(5, 115), TEXT_STYLE);
+                if let Err(e) = dbg_text.draw(&mut dc) {
                     error!("draw failed: {e:?}");
                     continue;
                 }
